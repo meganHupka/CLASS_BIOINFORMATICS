@@ -34,10 +34,10 @@ Since that is a lot of path typing each time let's shorten it my using file.path
 
 # we will first need to set an object name to load into the environment (what we are calling this file.path)
 # we assign it the values in the file using the assignment opperator " <- " 
-basepath <- "/scratch/Shares/rinnclass/CLASS_2023/<your_folder>"
+basepath <- "/scratch/Shares/rinnclass/CLASS_2023/mehu6123" 
 
 # we can then add the rest of the path as such:
-Pol2_peak1 <- read_tsv(file.path(basepath, " rest of file path"))
+Pol2_peak1 <- read_tsv(file.path(basepath, "CLASS_2023/CLASSES/03_Nextflow/00_Pol2_NF_CORE_RUN/results/bwa/mergedLibrary/macs/broadPeak/POLR2A_R1_peaks.broadPeak"))
 
 
 # now we can read in the peak file using file.path() function , rest of path
