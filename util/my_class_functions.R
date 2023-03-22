@@ -1,18 +1,3 @@
-
-#' fun(x * y)
-#' A function to multiply two numbers
-#'
-#' @description 
-#' This function will multiply the input values of X and Y
-#' 
-#' @param x one number you'd like to multiply
-#' y the other number you'd like to multiply
-fun <- function(x, y) {
-  ans <- x * y
-  return(ans)
-}
-
-
 #' IMPORT_PEAKS Function
 #' set's file path to peak files and extracts DBP name
 #' @description 
@@ -248,6 +233,42 @@ count_peaks_per_feature <- function(features, peak_list, type = "counts") {
   return(peak_matrix)
   
 }
+
+
+
+ucsc_formating <- function(consensusFilePath = consensusFilePath, export_path = export_path) {
+  
+  consensus_file_list <- list.files(consensusFilePath, full.names = T, pattern = ".bed")
+  
+  dbps <- sapply(consensus_file_list, function(x) {
+    y <- str_extract(x, "([^\\/]+$)")
+    unlist(strsplit(y, "_"))[1]})
+  
+  peaks <- lapply(consensus_file_list, read.table, col.names = c("chr", "start", "end", "name", "score", "strand"))
+  names(peaks) <- dbps
+  print(length(peaks))
+  canonical_chr <- c(paste0("chr", 1:22), "chrM", "chrX", "chrY")
+  peaks <- lapply(peaks, function(x) x %>% filter(chr %in% canonical_chr))
+  
+  headers <- paste0("track type=bed name=", names(peaks))
+  new_filenames <- paste0(export_path, names(peaks), ".bed")
+  
+  for(i in 1:length(peaks)) {
+    # Write the header line
+    writeLines(headers[[i]], new_filenames[[i]])
+    # Append the broadPeak table data
+    
+    write.table(peaks[[i]], new_filenames[[i]],
+                sep = "\t", col.names = FALSE, row.names = FALSE,
+                quote = FALSE, append = TRUE)
+  }
+  
+  return(c("done?"))
+}
+
+
+
+
 
 
 
