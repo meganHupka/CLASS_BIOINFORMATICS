@@ -101,10 +101,6 @@ ucsc_formating(consensusFilePath = consensusFilePath, export_path = exportFilePa
 
     ## [1] "done?"
 
-``` r
-# print out consensus peak files in a results/UCSC directory       (??????)
-```
-
 # I am curious if my proteins are transcription factors so I will use the annotations
 
 # in a cell paper I found and see
@@ -404,7 +400,11 @@ num_peaks_df
 
 ## results:
 
-\#1) What can you determine from these overlaps?
+\#1) What can you determine from these overlaps? There are a lot of
+peaks overlapping promoters which I think would make sense since all but
+one of my proteins are transcription factors. It is interesting that the
+protein with the lowest overlaps with promoters is not the one that is
+not a transcription factor. I am a bit confused by this.
 
 # Now I want to compare the overlaps with lncRNA and mRNA promoters seperately
 
@@ -443,7 +443,7 @@ num_peaks_df
 
 ## results:
 
-# 1) What is the difference in overlaps between mRNA and lncRNA promoters
+# 1) What is the difference in overlaps between mRNA and lncRNA promoters?
 
 Most of the peaks seem to overlap with mRNA promoters instead of lncRNA
 promoters.
@@ -453,7 +453,11 @@ promoters.
 # I will seperate lncRNA and mRNA gene bodies to find the overlaps
 
 ``` r
-genebody_peak_counts <- count_peaks_per_feature(lncrna_mrna_promoters, 
+lncrna_mrna_genes <- rtracklayer::import("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/CLASSES/05_R_analyses/01_peak_features/results/gene_annotations/mrna_lncrna_genes.gtf")
+lncrna_mrna_genes_df <- lncrna_mrna_genes %>% as.data.frame()
+
+
+genebody_peak_counts <- count_peaks_per_feature(lncrna_mrna_genes, 
                                                 consensus_list, 
                                                 type = "counts")
 
@@ -484,21 +488,23 @@ num_peaks_df
     ## 4                        1481                                286
     ## 5                        1742                                529
     ##   peaks_overlapping_mrna_promoters peaks_overlapping_genebody
-    ## 1                             3342                       4601
-    ## 2                             2127                       2659
-    ## 3                              469                        628
-    ## 4                             1195                       1481
-    ## 5                             1213                       1742
+    ## 1                             3342                      19847
+    ## 2                             2127                       3719
+    ## 3                              469                       1162
+    ## 4                             1195                       1731
+    ## 5                             1213                      10065
     ##   peaks_overlapping_lncrna_genebody peaks_overlapping_mrna_genebody
-    ## 1                              1259                            3342
-    ## 2                               532                            2127
-    ## 3                               159                             469
-    ## 4                               286                            1195
-    ## 5                               529                            1213
+    ## 1                              4527                           15320
+    ## 2                               722                            2997
+    ## 3                               233                             929
+    ## 4                               306                            1425
+    ## 5                              2291                            7774
 
 ## results:
 
 # 1) Do my proteins have more overlaps with promoters or genebodies?
+
+My proteins have more overlap with genebodies!
 
 # It is nice and all to find overlaps, but I am interested in how many proteins
 
@@ -527,9 +533,13 @@ peak_occurence_df <- data.frame("gene_id" = colnames(promoter_peak_occurence),
                                 "number_of_dbp" = colSums(promoter_peak_occurence))
 
 write_csv(peak_occurence_df, "results/peak_occurence_dataframe.csv")
+
+max(peak_occurence_df['number_of_dbp'])
 ```
 
-## results: I find the max number of proteins on a promoter to be X
+    ## [1] 5
+
+## results: I find the max number of proteins on a promoter to be 5
 
 # Now I want to start plotting my results
 
@@ -582,7 +592,7 @@ ggplot
     ## {
     ##     UseMethod("ggplot")
     ## }
-    ## <bytecode: 0x3ea9580>
+    ## <bytecode: 0x4fc8b68>
     ## <environment: namespace:ggplot2>
 
 # I want to make a histogram of the number of peaks for each of my proteins
@@ -604,7 +614,7 @@ hist
 
     ## function (x, ...) 
     ## UseMethod("hist")
-    ## <bytecode: 0x10a7ab8>
+    ## <bytecode: 0x21c7ab8>
     ## <environment: namespace:graphics>
 
 # Now I want to facet this by the type of DNA binding domain my protein has.
