@@ -291,7 +291,7 @@ ggplot
 ```{r}
 
 ggplot(num_peaks_df, aes(x = num_peaks)) +
-  geom_histogram(bins = 30) + 
+  geom_histogram(bins = 10) + 
   
   ylab("Number of Proteins") +
   xlab("Number of peaks") +
@@ -304,7 +304,7 @@ hist
 # Now I want to facet this by the type of DNA binding domain my protein has.
 ```{r}
 ggplot(num_peaks_df, aes(x = num_peaks, fill = dbd)) +
-  geom_histogram(bins = 30) + 
+  geom_histogram(bins = 10) + 
   
     
   ylab("Number of Proteins") +
