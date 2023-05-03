@@ -1,0 +1,544 @@
+---
+title: "Final_class_project"
+author: "Megan Hupka"
+date: "4/21/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Loading in packages
+library(tidyverse)
+library(GenomicRanges)
+library(ggplot2)
+library(ggdendro)
+library(pheatmap)
+library(DESeq2)
+
+
+# Loading in Functions
+source("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/util/my_class_functions.R")
+source("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/util/plotting_functions.R")
+source("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/util/_setup.R")
+
+```
+
+# Loading in peaks and creating dataframes
+```{r}
+# load("results/filtered_consensus_list.RData") # To reload so we do not have to redo all these functions
+
+broadpeakfilepath <- "/scratch/Shares/rinnclass/CLASS_2023/data/data/peaks"
+
+# importing peaks as granges with "import_peaks" function
+# can take 10+ min !
+peak_list <- import_peaks(consensus_file_path = broadpeakfilepath)
+
+
+# Creating unique DBP object for create_consensus_peaks_from_reduced
+dbp <- unique(sapply(names(peak_list), function(x) {
+   unlist(strsplit(x, "_"))[1]
+}))
+
+# now run our function consensus_from_reduced
+consensus_list <- lapply(dbp, consensus_from_reduced, peak_list)
+
+# adding names to the GRange list
+names(consensus_list) <- dbp
+
+# creating list of num_peaks per dbp
+num_peaks <- sapply(consensus_list, length)
+
+# Filtering to over 1000 peaks
+filtered_consensus_list <- consensus_list[sapply(consensus_list, length) > 1000]
+
+# saving 
+save(filtered_consensus_list, file = "results/filtered_consensus_list.RData")
+```
+
+# Loading Genome Features
+
+```{r}
+
+gencode_gr <- rtracklayer::import("/scratch/Shares/rinnclass/CLASS_2023/data/data/genomes/gencode.v32.annotation.gtf")
+
+# gencode genes
+gencode_genes <- gencode_gr[gencode_gr$type == "gene"] 
+
+# mrna_genes
+mrna_genes <- gencode_genes[gencode_genes$gene_type %in% "protein_coding"]
+
+# lncrna_genes
+lncrna_genes <- gencode_genes[gencode_genes$gene_type %in% "lncRNA"] 
+
+# mrna_lncrna_genes
+mrna_lncrna_genes <- gencode_genes[gencode_genes$gene_type %in% c("protein_coding","lncRNA")]
+
+# lncrna_mrna_promoters
+lncrna_mrna_promoters <- promoters(mrna_lncrna_genes, upstream = 1000, downstream = 1000)
+
+# lncrna_gene_ids
+lncrna_gene_ids <- mrna_lncrna_genes$gene_id[mrna_lncrna_genes$gene_type == "lncRNA"]
+
+# mrna_gene_ids
+mrna_gene_ids <-mrna_lncrna_genes$gene_id[mrna_lncrna_genes$gene_type == "protein_coding"]
+
+# Creating peak occurrence
+promoter_peak_occurrence <- count_peaks_per_feature(lncrna_mrna_promoters, filtered_consensus_list, 
+                                               type = "occurrence")
+
+# Let's double check that all lncrna & mrna genes are accounted for:
+stopifnot(all(colnames(promoter_peak_occurrence) == lncrna_mrna_promoters$gene_id))
+
+# Great we will use this quite a bit moving forward so let's write it out! 
+write.table(promoter_peak_occurrence, "lncrna_mrna_promoter_peak_occurrence_matrix.tsv")
+
+# Creating a dataframe
+stopifnot(all(colnames(promoter_peak_occurrence) == lncrna_mrna_promoters$gene_id))
+peak_occurrence_df <- data.frame("gene_id" = colnames(promoter_peak_occurrence),
+                                "gene_name" = lncrna_mrna_promoters$gene_name,
+                                "gene_type" = lncrna_mrna_promoters$gene_type,
+                                "chr" = lncrna_mrna_promoters@seqnames,   
+                                "1kb_up_tss_start" = lncrna_mrna_promoters@ranges@start,
+                                "strand" = lncrna_mrna_promoters@strand,
+                                "number_of_dbp" = colSums(promoter_peak_occurrence))
+
+write_csv(peak_occurrence_df, "peak_occurrence_dataframe.csv")
+peak_occurrence_df <- read_csv("peak_occurrence_dataframe.csv")
+
+```
+# Finding super binders
+```{r}
+#load("results/super_binders.RData") # To reload so we do not have to redo all these functions
+
+super_binders <- filter(peak_occurrence_df, number_of_dbp > 200)
+save(super_binders, file = "results/super_binders.RData")
+
+```
+# Peak Number and Genome Coverage Comparison
+```{r}
+# num_peaks_df <- read_csv("results/num_peaks_df.csv") # loading the csv so we do not have to run all the functions below
+
+num_peaks_df <- data.frame("dbp" = names(filtered_consensus_list),
+                           "num_peaks" = sapply(filtered_consensus_list, length))
+
+# total genome covered by peaks
+num_peaks_df$total_peak_length <- sapply(filtered_consensus_list, function(x) sum(width(x)))
+
+# creating number of promoter overlaps entry
+promoter_peak_counts <- count_peaks_per_feature(lncrna_mrna_promoters, filtered_consensus_list, type = "counts")
+
+# summing rows to get total number of promoter overlaps
+num_peaks_df$peaks_overlapping_promoters <- rowSums(promoter_peak_counts)
+
+# Plotting
+ggplot(num_peaks_df, aes(x = num_peaks, y = total_peak_length)) +
+  geom_point() + 
+
+  ylab("BP covered") +
+  xlab("Number of peaks") +
+  ggtitle("Peak count vs. total bases covered")
+ggsave("figures/genome_coverage.pdf")
+```
+# What is the distribution of promoter overlaps versus gene-bodies (hint hist)
+```{r}
+# lncrna promoter overlaps 
+num_peaks_df$peaks_overlapping_lncrna_promoters <- rowSums(promoter_peak_occurrence[,lncrna_gene_ids])
+
+# mrna promoter overlaps
+num_peaks_df$peaks_overlapping_mrna_promoters <- rowSums(promoter_peak_occurrence[,mrna_gene_ids])
+
+# Finding overlaps with gene_bodies (will take a few minutes again)
+# Note this takes several minutes
+genebody_peak_counts <- count_peaks_per_feature(mrna_lncrna_genes, 
+                                                filtered_consensus_list, 
+                                                type = "counts")
+
+# All gene bodies overlaps
+num_peaks_df$peaks_overlapping_genebody <- rowSums(genebody_peak_counts)
+
+# lncRNA gene bodies 
+num_peaks_df$peaks_overlapping_lncrna_genebody <- rowSums(genebody_peak_counts[,lncrna_gene_ids])
+
+# mRNA gene bodies
+num_peaks_df$peaks_overlapping_mrna_genebody <- rowSums(genebody_peak_counts[,mrna_gene_ids])
+
+# Saving Num Peaks
+write_csv(num_peaks_df, "results/num_peaks_df.csv")
+
+# Plotting
+ggplot(num_peaks_df, aes(x = num_peaks)) +
+  geom_point(aes(y = peaks_overlapping_promoters), color = "red") +
+  geom_point(aes(y = peaks_overlapping_genebody), color = "black") +
+  xlab("Number of Peaks") +
+  ylab("Number of peaks overlapping") +
+  ggtitle("Number of peaks overlapping genebodies compared to promoters")
+
+
+#Saving Plot
+ggsave("figures/lncRNA-mRNA-promoter_binding.pdf")
+```
+
+# Super binders and lncRNAs and mRNAs
+```{r}
+
+# Are there more super binders associated with lncRNAs or mRNAs?
+barplot(table(super_binders$gene_type), xlab = "Gene Type", ylab = "Number of Super Binders") 
+
+# What chromosome has the most super binders? 
+barplot(table(super_binders$chr), xlab = "Chromosome", ylab = "Number of Super Binders", las = 2,
+        cex.names = 0.7) 
+
+```
+# Results: Based on the barplot created above, there are more super-binders that are associated with protein coding or mRNAs then lncRNAs. Chromosome 1 seems to have the most super binds. It is interesting that there are also super binders in mitochondrial DNA.
+
+# Mitochondrial Super Binders
+```{r}
+mito_super_binders <- filter(super_binders, chr == "chrM")
+save(mito_super_binders, file = "results/mito_super_binders.RData")
+
+table(mito_super_binders$gene_name, mito_super_binders$number_of_dbp)
+
+
+mito_df <- data.frame(
+  "Gene Name" = mito_super_binders$gene_name,
+  "Number of DBP" = mito_super_binders$number_of_dbp
+)
+print(mito_df)
+```
+# Results: The super-binder with the highest DBP is MT-CYB and MT-ND6. MT-ND6 encodes NADH dehydrogenase 6 which is one of the proteins in complex 1. Complex 1 is important in the electron transport chain and is vital in the creation of ATP molecules. This makes sense why this gene would have a lot of DNA binding proteins. MT-CYB encodes cytochrome b which is important in complex 3, another complex needed to convert "food" to ATP. None of the super binders found in mitochondrial DNA are associated with lncRNAs.
+
+# Let's see how similar our genes are to each other
+# Clustering 
+```{r}
+promoter_peak_occurrence_matrix <- read.table("lncrna_mrna_promoter_peak_occurrence_matrix.tsv")
+
+promoter_peak_occurrence_matrix <- as.matrix(promoter_peak_occurrence_matrix)
+
+# Calculating distance matrix
+peak_occurrence_dist <- dist(promoter_peak_occurrence_matrix, method = "binary")
+
+# Clustering Distance Matrix
+bin_hier <- hclust(peak_occurrence_dist, method = "complete")
+plot(bin_hier)
+pdf("figures/dbp_hclust_dendro.pdf", height = 12, width = 70)
+
+
+ ggdendro::ggdendrogram(bin_hier, rotate = FALSE,  size = 3, 
+                       theme_dendro = TRUE) +
+   # 90 degree rotation to right
+   coord_flip() +
+   scale_y_continuous() +
+   # adds label
+   scale_x_continuous(position = "top") +
+   # subsection to labels in order of clustering
+   # ? seq_along
+   scale_x_continuous(breaks = seq_along(bin_hier$labels[bin_hier$order]),
+                      
+                      # adding labels that are in the order 'column'
+             labels = bin_hier$labels[bin_hier$order], position = "top",
+             expand = c(0,0)) +
+   theme(axis.text.x = element_text(angle = 90, hjust  = 1)) + 
+   theme(axis.text.y = element_text(angle = 0,hjust = 1)) +
+   scale_y_reverse(expand = c(0.01, 0)) +
+   theme(
+     plot.background = element_blank(),
+     panel.grid.major = element_blank(),
+   panel.grid.minor = element_blank(),
+     panel.border = element_blank()
+   )
+ 
+ggsave("figures/ggdendro_plot.pdf", height = 50, width = 12, limitsize = F)
+
+```
+
+# Clustering of lncRNA and mRNA seperately
+
+# lncRNA
+```{r}
+lncrna_mrna_promoters <- rtracklayer::import("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/CLASSES/05_R_analyses/01_peak_features/results/gene_annotations/lncrna_mrna_promoters.gtf")
+
+# now we can split into lncRNA and mRNA
+lncrna_promoters <- lncrna_mrna_promoters[lncrna_mrna_promoters$gene_type == "lncRNA"]
+
+# mrna promoters
+
+mrna_promoters <- lncrna_mrna_promoters[lncrna_mrna_promoters$gene_type == "protein_coding"]
+
+lncrna_peak_occurrence <- promoter_peak_occurrence_matrix[,lncrna_promoters$gene_id]
+
+# we do the clutering the same as above or we can combine the dist and hclust:
+bin_hier_lncrna <- hclust(dist(lncrna_peak_occurrence, method = "binary"))
+
+# Now plot with ggdendro
+ggdendro::ggdendrogram(bin_hier_lncrna, rotate = T,  size = 3)
+ 
+# Now let's save this figure
+ggsave("figures/lncrna_hclust_binary_dist.pdf", height = 49, width = 6)
+
+```
+# Result: MED13 is a subunit of the CDK8-kinase which can reversibly bind the protein, Mediator, which is a required protein in polymerase II transcription initiation. MED1 is another closely related protein to MED13 and as such is clustered together with MED13. ZNF503 is fairly close in clustering to MED13 and MED1. Although its exact function is not known, it is predicted to enable metal ion binding activity and may have a negative role in gene expression. I wonder if there is any connection between the CDK8-kinase complex and this ZNF in terms of negative regulation of transcription. 
+
+
+# mRNA 
+```{r}
+mrna_peak_occurrence <- promoter_peak_occurrence_matrix[,mrna_promoters$gene_id]
+
+# getting the distance matrix for only mRNA promoters  
+bin_hier_mrna <- hclust(dist(mrna_peak_occurrence, method = "binary"))
+ 
+# plotting with ggdendro
+ggdendro::ggdendrogram(bin_hier, rotate = TRUE,  size = 3)
+
+# saving
+ggsave("figures/mrna_hclust_binary_dist.pdf", height = 44, width = 6)
+
+```
+
+# DBPs Binding to Promoter
+```{r}
+DBPs_on_promoter <- bind_rows(lncrna_promoters %>% 
+                                 as.data.frame(),
+                 mrna_promoters %>% 
+                    as.data.frame()) %>%
+  dplyr::select(gene_id, gene_name)
+
+promoter_dbps <- promoter_peak_occurrence_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("dbp") %>%
+pivot_longer(2:ncol(.), names_to = "gene_id", values_to = "occurrence") %>%
+  filter(occurrence == 1) %>%
+  dplyr::select(-occurrence) %>%
+  left_join(DBPs_on_promoter)
+
+
+write.csv(promoter_dbps, "dbps_on_a_promoter.csv")
+```
+
+
+# Metaplot lncRNAs
+```{r}
+
+lncrna_promoters <- lncrna_mrna_promoters[lncrna_mrna_promoters$gene_type == "lncRNA"]
+mrna_promoters <- lncrna_mrna_promoters[lncrna_mrna_promoters$gene_type == "protein_coding"]
+
+#setting up lncrna DF.
+lncrna_metaplot_df <- data.frame(x = integer(), dens = numeric(), dbp = character())
+
+# for loop to populate DF with overlap density in lncrna promoters
+for(i in 1:length(filtered_consensus_list)) {
+  #print(names(filtered_consensus_list)[[i]])
+  tmp_df <- profile_tss(filtered_consensus_list[[i]], lncrna_mrna_promoters = lncrna_promoters)
+  tmp_df$dbp <- names(filtered_consensus_list)[[i]]
+  lncrna_metaplot_df <- bind_rows(lncrna_metaplot_df, tmp_df)
+  
+}
+
+# saving
+write_rds(lncrna_metaplot_df, "results/lncRNA_metaplot_df_final.rds")
+
+# Which genes seem to have a difference in where they bind on promoters between lncRNA and mRNA promoters
+
+
+# Make a metaplot of DBPS only on Super-binders versus regular promoters ...
+```
+
+# Metaplot mRNAs
+
+```{r}
+# now for mRNAs 
+mrna_metaplot_df <- data.frame(x = integer(), dens = numeric(), dbp = character())
+
+# for loop to populate mRNA_metaplot
+for(i in 1:length(filtered_consensus_list)) {
+ # print(names(filtered_consensus_list)[[i]])
+  tmp_df <- profile_tss(filtered_consensus_list[[i]], lncrna_mrna_promoters = mrna_promoters)
+  tmp_df$dbp <- names(filtered_consensus_list)[[i]]
+  mrna_metaplot_df <- bind_rows(mrna_metaplot_df, tmp_df)
+  
+}
+
+# saving
+write_rds(lncrna_metaplot_df, "results/mRNA_metaplot_df_final.rds")
+```
+
+# Together
+```{r}
+# now adding the information of gene type
+mrna_metaplot_df$gene_type <- "mRNA"
+lncrna_metaplot_df$gene_type <- "lncRNA"
+combined_metaplot_profile <- bind_rows(mrna_metaplot_df, lncrna_metaplot_df)
+
+# Plotting
+ggplot(combined_metaplot_profile, 
+       aes(x = x, y = dens, color = gene_type )) +
+  geom_vline(xintercept = 0, lty = 2) + 
+  geom_line(size = 1.5) + 
+  facet_wrap(dbp ~ ., scales = "free_y") +
+  ggtitle("Promoter Metaplot") + 
+  scale_x_continuous(breaks = c(-1000, 0, 1000),
+                     labels = c("-1kb", "TSS", "+1kb"),
+                     name = "") + 
+  ylab("Peak frequency") +
+ scale_color_manual(values = c("#424242","#a8404c"))
+
+# saving
+ggsave("figures/meta_plot_lncRNA_mRNA.pdf", width = 49, height = 12)
+```
+
+# RNAseq expression
+
+```{r}
+
+samplesheet <- read_csv("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/CLASSES/05_R_analyses/05_RNAseq/samplesheet.csv")
+
+# First changing the total sample to homo_sapiens_insoluble_fraction
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_R1"), "condition"] <- "homo_sapiens_insoluble_cytoplasmic_fraction"
+
+# same for changing insoluble_cytoplasmic_fraction condition to homo_sapiens_hepg2
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_R2"), "condition"] <- "homo_sapiens_hepg2"
+
+
+# rewriting sample name
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_R1"), "sample_name"] <- "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_RX"
+
+
+# rewrite sample name
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_R2"), "sample_name"] <- "homo_sapiens_hepg2_R1"
+
+# change RX back
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_RX"), "sample_name"] <- "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_R2"
+
+# finally change replicate numbers -- NOT IDEAL!
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_R1"), "replicate"] <- "R1"
+
+# finally change replicate numbers -- NOT IDEAL!
+samplesheet[which(samplesheet$sample_name == "homo_sapiens_hepg2_insoluble_cytoplasmic_fraction_R2"), "replicate"] <- "R2"
+
+
+# saving this to sample_sheets folder
+write.csv(samplesheet, "sample_sheets/corrected_samplesheet.csv")
+
+# Genome Annotation
+
+# Importing genome annotations (we will export what we need in .Rdata format to avoid this step moving forward)
+gencode_gtf <- rtracklayer::import("/scratch/Shares/rinnclass/CLASS_2023/data/data/genomes/gencode.v32.annotation.gtf")
+
+# making genocde_genes GRanges to save in .Rdata session.
+gencode_genes <- gencode_gtf[gencode_gtf$type == "gene"]
+
+# It is really handy to convert gene_id (long number) to gene_name (more intuitive). 
+# We are making G2S file that we can use in future to convert between the two.
+g2s <- gencode_genes %>% as.data.frame() %>%
+  dplyr::select(gene_id, gene_name)
+
+# writingn this out to avoid loading Gencode in the future
+write.csv(g2s, "RNAseq/g2s.csv")
+
+# reading in salmon counts:
+counts <- read_csv("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/CLASSES/05_R_analyses/05_RNAseq/00_RNAseq_download_NF_core_pipeline/00_NF_CORE_RNAseq_Pipeline_run/results/salmon/salmon_merged_gene_counts.csv")
+
+# adding rownames and converting to a matrix
+counts <- column_to_rownames(counts, "gene_id") %>%
+as.matrix()
+
+# First let's put the counts columns in the same order as the samplesheet
+# If they are not then we would essentially be randomizing our data later!!
+counts <- counts[,samplesheet$sample_id]
+
+# This is a handy check point to make sure the labels in 
+# sample sheet and counts are similar
+all(colnames(counts) == samplesheet$sample_id)
+
+# Now we know they're in the same order, and we can change the names
+# It is nicer to have more descriptive names.
+colnames(counts) <- samplesheet$sample_name
+
+# Deseq wants round numbers so we are going to round them here:
+counts <- round(counts)
+
+# now we want to get rid of all genes with 0 across all samples.
+counts_filtered <- counts[rowSums(counts) > 1,]
+
+
+write_rds(counts_filtered, "RNAseq/results/counts_matrix.rds")
+
+# reading in salmon tpm
+salmon_tpm <- read.csv("/scratch/Shares/rinnclass/CLASS_2023/mehu6123/CLASS_2023/CLASSES/05_R_analyses/05_RNAseq/00_RNAseq_download_NF_core_pipeline/00_NF_CORE_RNAseq_Pipeline_run/results/salmon/salmon_merged_gene_tpm.csv")
+
+# TPM table is in same order as samplesheet
+tpm_df <- salmon_tpm %>% 
+  pivot_longer(cols = 2:ncol(.), names_to = "sample_id", values_to = "tpm") %>%
+  merge(samplesheet) %>%
+  group_by(gene_id, condition) %>%
+  summarize(tpm = mean(tpm, na.rm = T)) %>%
+  pivot_wider(names_from = condition, values_from = tpm, names_prefix = "tpm_")
+
+promoter_features_df <- merge(peak_occurrence_df, tpm_df)
+
+ggplot(peak_occurrence_df, aes(x = number_of_dbp)) +
+  geom_density() 
+
+```
+
+# What is the difference in RNA expression of mitochondrial genes and genes on chromosome 1?
+```{r}
+mitoRNA <- filter(promoter_features_df, chr == "chrM")
+chromosome1RNA <- filter(promoter_features_df, chr == "chr1")
+
+chr_comparison <- rbind(chromosome1RNA, mitoRNA)
+
+ggplot(chr_comparison, 
+            aes(y = log2(tpm_homo_sapiens_hepg2 + 0.001), x = number_of_dbp, color = chr)) + 
+geom_point() +
+  geom_smooth(method = 'gam', formula = y ~ s(x, bs = "cs")) +
+  geom_smooth(method = "lm") +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_color_manual(values = c("#a8404c", "#424242"), name = "Gene type") + 
+  ggtitle("Expression vs. promoter binding events for super binders") + 
+  xlab(expression('Number of TFs')) +
+  ylab(expression(log[2](TPM)))
+
+ggsave("figures/chr_RNA_comparison.pdf", height = 49, width = 6)
+```
+# Result: It appears that the mitochondrial genes have high RNA expression equivalent to some of the highest expressing genes on Chromosome 1. This is saved as a figure in the figures folder.
+
+# Super Binders and RNA Expression
+```{r}
+# First I will filter out super-binders into a new dataframe using the peak_feature_df as
+# this has all the information on RNA seq as well as number of DBP
+super_binders_RNA <- filter(promoter_features_df, number_of_dbp > 200)
+save(super_binders_RNA, file = "RNAseq/results/super_binders_RNA.RData")
+
+
+ggplot(super_binders_RNA, 
+            aes(y = log2(tpm_homo_sapiens_hepg2 + 0.001), x = number_of_dbp, color = gene_type)) + 
+geom_point() +
+  geom_smooth(method = 'gam', formula = y ~ s(x, bs = "cs")) +
+  geom_smooth(method = "lm") +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_color_manual(values = c("#a8404c", "#424242"), name = "Gene type") + 
+  ggtitle("Expression vs. promoter binding events for super binders") + 
+  xlab(expression('Number of TFs')) +
+  ylab(expression(log[2](TPM)))
+
+ggsave("figures/super_binders_RNA_Expression.pdf", height = 49, width = 6)
+```
+# Result: It seems like there are quite a few super binders with little to no expression. I am wondering are these super binders in the cytosol? nucleus? or mitochondria?
+
+# Super Binders and RNA Expression (Further Analysis) 
+```{r}
+
+# First filter to find all the super binders with no RNA expression
+super_binders_low_RNA <- filter(super_binders_RNA, log2(tpm_homo_sapiens_hepg2 + 0.001) < -9)
+save(super_binders_low_RNA, file = "RNAseq/results/super_binders_low_RNA.RData")
+
+cytoRNA <- sum(super_binders_low_RNA$tpm_homo_sapiens_cytosolic_fraction)
+
+nucRNA <- sum(super_binders_low_RNA$tpm_homo_sapiens_nuclear_fraction)
+
+print(cytoRNA) # Cytoplasmic RNA Summed up 
+print(nucRNA) # Nuclear RNA Summed Up
+
+```
+# Result: None of the low/ no expression superbinders are mitochondrial. The summed total of the cytoplasmis RNA expression from super binders is 272.0891 while the summed nuclear RNA expression is 336.2785. This might not be the best measurement to accurately determine if more of the low RNA expressing super binders are cytoplasmic or nuclear. I have saved a csv of the low RNA super binders expression in the RNASeq results folder.
